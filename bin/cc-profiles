@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""List Claude Code profiles with their remaining usage limits.
+
+Each profile has its own Keychain item, whose name Claude Code derives from the
+directory passed in CLAUDE_SECURESTORAGE_CONFIG_DIR:
+
+    Claude Code-credentials-<sha256(dir)[0:8]>
+
+Without that variable the item is plain "Claude Code-credentials" (the "default"
+profile).
+
+Percentages shown are AVAILABLE (100 - utilization). They are not absolute token
+counts: the API exposes percentage utilization per window.
+"""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
+
+__version__ = "0.1.0"
+
+PROFILES_DIR = Path(
+    os.environ.get("CLAUDE_PROFILES_DIR") or Path.home() / ".claude-profiles"
+)
+PROFILE_FILE = os.environ.get("CC_PROFILE_FILE") or ".cc-profile"
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+DEFAULT_SERVICE = "Claude Code-credentials"
+TIMEOUT = 5
+DASH = "—"
+
+
+# --- credentials ------------------------------------------------------------
+
+def service_name(profile):
+    """Same computation Claude Code uses to name the Keychain item."""
+    if profile == "default":
+        return DEFAULT_SERVICE
+    path = unicodedata.normalize("NFC", str(PROFILES_DIR / profile))
+    digest = hashlib.sha256(path.encode()).hexdigest()[:8]
+    return f"{DEFAULT_SERVICE}-{digest}"
+
+
+def read_blob(profile):
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password",
+             "-a", os.environ.get("USER", ""), "-w", "-s", service_name(profile)],
+            capture_output=True, text=True, timeout=TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    try:
+        return json.loads(out.stdout.strip())
+    except json.JSONDecodeError:
+        return None
+
+
+def profile_names():
+    names = []
+    if PROFILES_DIR.is_dir():
+        names = sorted(p.name for p in PROFILES_DIR.iterdir() if p.is_dir())
+    return ["default"] + names
+
+
+def active_profile():
+    marker = PROFILES_DIR / "active"
+    try:
+        name = marker.read_text().strip()
+    except OSError:
+        return "default"
+    return name or "default"
+
+
+def dir_profile():
+    """(nearest profile file, profile it names) walking up from the cwd, or None.
+
+    Mirrors _cc_profile_find_file / _cc_profile_read_file in cc.zsh.
+    """
+    home = Path.home()
+    current = Path.cwd()
+    for folder in [current, *current.parents]:
+        candidate = folder / PROFILE_FILE
+        if candidate.is_file():
+            try:
+                lines = candidate.read_text().splitlines()
+            except OSError:
+                return None
+            for line in lines:
+                name = line.split("#", 1)[0].strip()
+                if name:
+                    return candidate, name
+            return None
+        if folder == home:
+            break
+    return None
+
+
+# --- API --------------------------------------------------------------------
+
+def fetch_usage(token):
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        return {"_error": "token rejected" if exc.code in (401, 403) else f"HTTP {exc.code}"}
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return {"_error": "offline"}
+
+
+# --- formatting -------------------------------------------------------------
+
+def plan_label(oauth):
+    sub = oauth.get("subscriptionType") or "?"
+    tier = oauth.get("rateLimitTier") or ""
+    short = tier.replace("default_claude_max_", "").replace("default_claude_", "")
+    return f"{sub} · {short}" if short else sub
+
+
+def available(window):
+    if not isinstance(window, dict):
+        return None
+    util = window.get("utilization")
+    return None if util is None else max(0, min(100, round(100 - util)))
+
+
+def scoped_limit(payload):
+    """Active weekly_scoped limit, or the most consumed one if there are several."""
+    scoped = [l for l in payload.get("limits") or []
+              if l.get("kind") == "weekly_scoped" and (l.get("scope") or {}).get("model")]
+    if not scoped:
+        return None
+    chosen = next((l for l in scoped if l.get("is_active")),
+                  max(scoped, key=lambda l: l.get("percent") or 0))
+    return chosen["scope"]["model"].get("display_name") or "?", \
+        max(0, min(100, round(100 - (chosen.get("percent") or 0))))
+
+
+def relative(iso):
+    if not iso:
+        return None
+    try:
+        delta = datetime.fromisoformat(iso) - datetime.now(timezone.utc)
+    except ValueError:
+        return None
+    secs = int(delta.total_seconds())
+    if secs <= 0:
+        return "now"
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    return f"{minutes}m" if minutes else "<1m"
+
+
+def build_row(profile):
+    blob = read_blob(profile)
+    if not blob:
+        return {"profile": profile, "plan": DASH, "note": "(no session)"}
+
+    oauth = blob.get("claudeAiOauth") or {}
+    row = {"profile": profile, "plan": plan_label(oauth)}
+
+    expires = oauth.get("expiresAt")
+    if expires and expires / 1000 < time.time():
+        row["note"] = "token expired"
+        return row
+
+    token = oauth.get("accessToken")
+    if not token:
+        row["note"] = "(no session)"
+        return row
+
+    payload = fetch_usage(token)
+    if "_error" in payload:
+        row["note"] = payload["_error"]
+        return row
+
+    row["h5"] = available(payload.get("five_hour"))
+    row["d7"] = available(payload.get("seven_day"))
+    row["model"] = scoped_limit(payload)
+    resets = [(label, relative((payload.get(key) or {}).get("resets_at")))
+              for label, key in (("5h", "five_hour"), ("7d", "seven_day"))]
+    row["reset"] = " · ".join(f"{lbl} {rel}" for lbl, rel in resets if rel)
+    return row
+
+
+def pct(value):
+    return DASH if value is None else f"{value}%"
+
+
+def main(argv):
+    if "--version" in argv or "-V" in argv:
+        print(f"cc-profiles {__version__}")
+        return 0
+    if "--help" in argv or "-h" in argv:
+        print(__doc__.strip())
+        return 0
+
+    names = profile_names()
+    active = active_profile()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        rows = list(pool.map(build_row, names))
+
+    w_prof = max([len("PROFILE")] + [len(r["profile"]) for r in rows])
+    w_plan = max([len("PLAN")] + [len(r["plan"]) for r in rows])
+    models = [f"{m[0]} {m[1]}%" for r in rows if (m := r.get("model"))]
+    w_model = max([len("MODEL")] + [len(m) for m in models])
+
+    print()
+    print(f"  {'PROFILE':<{w_prof}}  {'PLAN':<{w_plan}}   {'5h':>4}   {'7d':>4}"
+          f"   {'MODEL':<{w_model}}  RESET")
+    for row in rows:
+        mark = "*" if row["profile"] == active else " "
+        line = f"{mark} {row['profile']:<{w_prof}}  {row['plan']:<{w_plan}}"
+        if "note" in row:
+            print(f"{line}   {DASH:>4}   {DASH:>4}   {DASH:<{w_model}}  {row['note']}")
+            continue
+        model = row.get("model")
+        cell = f"{model[0]} {model[1]}%" if model else DASH
+        print(f"{line}   {pct(row['h5']):>4}   {pct(row['d7']):>4}"
+              f"   {cell:<{w_model}}  {row['reset'] or DASH}")
+    print()
+    print("  * = active profile · % = available · 5h = session window, 7d = weekly")
+
+    found = dir_profile()
+    if found:
+        path, name = found
+        where = str(path.parent).replace(str(Path.home()), "~", 1)
+        valid = name == "default" or (PROFILES_DIR / name).is_dir()
+        suffix = "" if valid else "  ← that profile does not exist"
+        print(f"  in this directory: {name} ({PROFILE_FILE} in {where}){suffix}")
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
