@@ -145,11 +145,10 @@ Write it with `cc set work`; remove it with `cc set`.
 A running process never re-reads its credentials, so switching accounts means relaunching. The
 conversation survives, because history lives in `~/.claude`, which is shared across profiles.
 
-From inside a Claude Code session, run `!cc switch personal`. It records the request and prints
-what to do next:
+From inside a Claude Code session, use the `!` prompt to run **`cc-profiles switch personal`**:
 
 ```
-cc: to switch to 'personal', exit this session (Ctrl+D) and run:
+To switch to 'personal', exit this session (Ctrl+D) and run:
 
     cc switch
 
@@ -159,6 +158,12 @@ cc: to switch to 'personal', exit this session (Ctrl+D) and run:
 
 Exit, run `cc switch`, and you're back in the same conversation on the other account. The
 pending request is consumed once and ignored after an hour.
+
+> **Why `cc-profiles switch` and not `cc switch` there?** `cc` is a zsh function, and Claude
+> Code's `!` prompt and Bash tool run in a non-interactive shell that does not load your
+> `~/.zshrc`. Typing `cc` there resolves to `/usr/bin/cc` — the C compiler — and you get a
+> `clang: no such file or directory` error. `cc-profiles` is a real executable on your `PATH`,
+> so it works everywhere. In a normal terminal both forms are equivalent.
 
 If you didn't record anything first, `cc switch <profile>` falls back to `--continue`, which
 resumes the most recent conversation in the current directory.

@@ -144,30 +144,14 @@ _cc_profile_set() {
 _cc_profile_switch() {
   local name="$1" pending="$CLAUDE_PROFILES_DIR/pending-switch" sid
 
-  # Inside a Claude Code session we cannot replace the running process:
-  # record the request and tell the user what to run after exiting.
+  # Inside a Claude Code session we cannot replace the running process. The
+  # recording lives in cc-profiles (an executable) because this function does
+  # not exist in Claude Code's `!` prompt or Bash tool — those run in a
+  # non-interactive shell where `cc` would resolve to /usr/bin/cc, the C
+  # compiler. Use `cc-profiles switch <profile>` from there.
   if [[ -n "$CLAUDECODE" ]]; then
-    if [[ -z "$name" ]]; then
-      print -u2 "$CC_CMD: switch to which profile? ($(_cc_profile_names | tr '\n' ' ')default)"
-      return 2
-    fi
-    if [[ "$name" != default && ! -d "$(_cc_profile_dir "$name")" ]]; then
-      print -u2 "$CC_CMD: unknown profile '$name' ($(_cc_profile_names | tr '\n' ' ')default)"
-      return 2
-    fi
-    sid="$CLAUDE_CODE_SESSION_ID"
-    if [[ -n "$sid" ]]; then
-      mkdir -p "$CLAUDE_PROFILES_DIR" && print "$name $sid" > "$pending"
-    fi
-    print "$CC_CMD: to switch to '$name', exit this session (Ctrl+D) and run:"
-    print
-    print "    $CC_CMD switch"
-    print
-    if [[ -n "$sid" ]]; then
-      print "  or, from any terminal:"
-      print "    $CC_CMD use $name --resume $sid"
-    fi
-    return 0
+    cc-profiles switch "$name"
+    return $?
   fi
 
   # Outside a session: consume the pending request, if any.

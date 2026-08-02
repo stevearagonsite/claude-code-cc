@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 PROFILES_DIR = Path(
     os.environ.get("CLAUDE_PROFILES_DIR") or Path.home() / ".claude-profiles"
@@ -207,6 +207,42 @@ def pct(value):
     return DASH if value is None else f"{value}%"
 
 
+def record_switch(profile):
+    """Record a profile switch for the current session.
+
+    Lives here rather than in cc.zsh because `cc` is a shell function: it does
+    not exist in Claude Code's `!` prompt or Bash tool, which run in a
+    non-interactive shell. This executable is on the PATH, so it always works.
+    """
+    if not profile:
+        print(f"usage: cc-profiles switch <profile>   ({' '.join(profile_names())})",
+              file=sys.stderr)
+        return 2
+    if profile != "default" and not (PROFILES_DIR / profile).is_dir():
+        print(f"cc-profiles: unknown profile '{profile}' ({' '.join(profile_names())})",
+              file=sys.stderr)
+        return 2
+
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not os.environ.get("CLAUDECODE"):
+        print("cc-profiles: not inside a Claude Code session — just run "
+              f"'cc use {profile}' in your terminal.", file=sys.stderr)
+        return 1
+
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    if session:
+        (PROFILES_DIR / "pending-switch").write_text(f"{profile} {session}\n")
+
+    print(f"To switch to '{profile}', exit this session (Ctrl+D) and run:")
+    print()
+    print("    cc switch")
+    if session:
+        print()
+        print("  or, from any terminal:")
+        print(f"    cc use {profile} --resume {session}")
+    return 0
+
+
 def main(argv):
     if "--version" in argv or "-V" in argv:
         print(f"cc-profiles {__version__}")
@@ -214,6 +250,8 @@ def main(argv):
     if "--help" in argv or "-h" in argv:
         print(__doc__.strip())
         return 0
+    if argv and argv[0] == "switch":
+        return record_switch(argv[1] if len(argv) > 1 else "")
 
     names = profile_names()
     active = active_profile()

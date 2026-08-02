@@ -10,7 +10,7 @@ description: >
   another.
 metadata:
   type: reference
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Claude Code account profiles
@@ -94,8 +94,9 @@ marks the active one with `*` and adds a line for the current directory.
 A running process never re-reads its credentials, so switching accounts means relaunching. The
 conversation survives because history lives in `~/.claude`, shared across profiles.
 
-Inside a session, `!cc switch <profile>` records the request (profile + `$CLAUDE_CODE_SESSION_ID`
-in `~/.claude-profiles/pending-switch`) and prints the exact command to run after exiting.
+Inside a session, run **`cc-profiles switch <profile>`** (not `cc switch` — see below). It
+records the request (profile + `$CLAUDE_CODE_SESSION_ID` in
+`~/.claude-profiles/pending-switch`) and prints the exact command to run after exiting.
 Outside a session, `cc switch` consumes that pending request and relaunches with
 `--resume <id>` under the new profile. The pending request is used once and ignored after an
 hour; without one, `cc switch <profile>` falls back to `--continue`.
@@ -152,11 +153,17 @@ detected by reading `expiresAt` from the blob, without hitting the API.
 
 ## Gotcha when running from a tool, not a terminal
 
-`cc` is a **zsh function**: it does not exist in a non-interactive shell, such as an agent's
-Bash tool. The listing, however, is an executable on the `PATH`:
+`cc` is a **zsh function**: it does not exist in a non-interactive shell — Claude Code's `!`
+prompt, its Bash tool, or any script that doesn't load `~/.zshrc`. Worse, `cc` there resolves
+to `/usr/bin/cc`, the **C compiler**, so you get `clang: no such file or directory` instead of
+a clear error. Claude Code's shell snapshot does not capture `~/.zshrc` functions either, so
+this will not start working in a newer session.
+
+`cc-profiles` is a real executable on the `PATH` and always works:
 
 ```bash
 cc-profiles                          # = cc list, works from a Bash tool
+cc-profiles switch <profile>         # = cc switch, records the pending switch
 cat ~/.claude-profiles/active        # globally active profile
 cat .cc-profile                      # this project's profile, if any
 
