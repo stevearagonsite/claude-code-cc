@@ -33,7 +33,7 @@ brew tap stevearagonsite/tap
 brew install claude-code-cc
 ```
 
-Then add to your `~/.zshrc`:
+Then add to your **`~/.zshenv`** (not `.zshrc` — see below):
 
 ```sh
 source "$(brew --prefix)/share/claude-code-cc/cc.zsh"
@@ -45,6 +45,24 @@ source "$(brew --prefix)/share/claude-code-cc/cc.zsh"
 git clone https://github.com/stevearagonsite/claude-code-cc.git
 cd claude-code-cc && ./install.sh          # add --with-skill for the Claude Code skill
 ```
+
+### Why `.zshenv` and not `.zshrc`
+
+`.zshrc` only runs for **interactive** shells. Claude Code's `!` prompt and Bash tool run a
+non-interactive `zsh -c`, so a `cc` defined in `.zshrc` doesn't exist there — and since `cc` is
+also `/usr/bin/cc`, you'd get a confusing `clang: no such file or directory` instead of an
+error you can act on.
+
+`.zshenv` runs for every zsh. To stay safe, `cc.zsh` only defines the command when the shell is
+**interactive** or `CLAUDECODE` is set:
+
+| Context | `cc` is… |
+|---|---|
+| Your terminal | the profile switcher |
+| Claude Code's `!` prompt / Bash tool | the profile switcher |
+| Build scripts, CI, `zsh -c` from another program | `/usr/bin/cc`, the C compiler — untouched |
+
+So a `Makefile` or script that compiles C under zsh keeps working.
 
 ## Getting started
 
@@ -145,7 +163,7 @@ Write it with `cc set work`; remove it with `cc set`.
 A running process never re-reads its credentials, so switching accounts means relaunching. The
 conversation survives, because history lives in `~/.claude`, which is shared across profiles.
 
-From inside a Claude Code session, use the `!` prompt to run **`cc-profiles switch personal`**:
+From inside a Claude Code session, use the `!` prompt to run `cc switch personal`:
 
 ```
 To switch to 'personal', exit this session (Ctrl+D) and run:
@@ -159,14 +177,11 @@ To switch to 'personal', exit this session (Ctrl+D) and run:
 Exit, run `cc switch`, and you're back in the same conversation on the other account. The
 pending request is consumed once and ignored after an hour.
 
-> **Why `cc-profiles switch` and not `cc switch` there?** `cc` is a zsh function, and Claude
-> Code's `!` prompt and Bash tool run in a non-interactive shell that does not load your
-> `~/.zshrc`. Typing `cc` there resolves to `/usr/bin/cc` — the C compiler — and you get a
-> `clang: no such file or directory` error. `cc-profiles` is a real executable on your `PATH`,
-> so it works everywhere. In a normal terminal both forms are equivalent.
-
 If you didn't record anything first, `cc switch <profile>` falls back to `--continue`, which
 resumes the most recent conversation in the current directory.
+
+`cc-profiles switch <profile>` does the same recording and is a real executable, so it also
+works from bash or any shell that never sees `cc.zsh`.
 
 ## How it works
 

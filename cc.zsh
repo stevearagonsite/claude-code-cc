@@ -267,4 +267,17 @@ _cc_main() {
   esac
 }
 
-eval "${CC_CMD}() { _cc_main \"\$@\" }"
+# Define the command only where it is wanted. `cc` shadows /usr/bin/cc, the C
+# compiler, so it must NOT exist in plain script shells — a build that runs
+# `cc foo.c` under zsh has to reach the real compiler.
+#
+# Interactive shells: yes, that's the whole point.
+# Claude Code's `!` prompt and Bash tool: yes — they are non-interactive but
+#   set CLAUDECODE=1, and that's exactly where you want `cc switch` to work.
+# Everything else (build scripts, CI, `zsh -c` from another program): no.
+#
+# For the second case to work, source this file from ~/.zshenv, which zsh reads
+# for every shell. From ~/.zshrc it only reaches interactive ones.
+if [[ -o interactive || -n "$CLAUDECODE" ]]; then
+  eval "${CC_CMD}() { _cc_main \"\$@\" }"
+fi

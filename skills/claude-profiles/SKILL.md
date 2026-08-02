@@ -10,7 +10,7 @@ description: >
   another.
 metadata:
   type: reference
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Claude Code account profiles
@@ -94,12 +94,15 @@ marks the active one with `*` and adds a line for the current directory.
 A running process never re-reads its credentials, so switching accounts means relaunching. The
 conversation survives because history lives in `~/.claude`, shared across profiles.
 
-Inside a session, run **`cc-profiles switch <profile>`** (not `cc switch` — see below). It
-records the request (profile + `$CLAUDE_CODE_SESSION_ID` in
-`~/.claude-profiles/pending-switch`) and prints the exact command to run after exiting.
-Outside a session, `cc switch` consumes that pending request and relaunches with
-`--resume <id>` under the new profile. The pending request is used once and ignored after an
-hour; without one, `cc switch <profile>` falls back to `--continue`.
+Inside a session, `cc switch <profile>` (from the `!` prompt or the Bash tool) records the
+request — profile + `$CLAUDE_CODE_SESSION_ID` in `~/.claude-profiles/pending-switch` — and
+prints the exact command to run after exiting. Outside a session, `cc switch` consumes that
+pending request and relaunches with `--resume <id>` under the new profile. The pending request
+is used once and ignored after an hour; without one, `cc switch <profile>` falls back to
+`--continue`.
+
+`cc-profiles switch <profile>` does the same recording and is a real executable, so it works
+from bash or any shell that never sources `cc.zsh`.
 
 ## `.cc-profile` (per-project profile)
 
@@ -151,18 +154,27 @@ other).
 States without numbers: `(no session)`, `token expired`, `token rejected`, `offline`. Expiry is
 detected by reading `expiresAt` from the blob, without hitting the API.
 
-## Gotcha when running from a tool, not a terminal
+## Where `cc` exists, and where it doesn't
 
-`cc` is a **zsh function**: it does not exist in a non-interactive shell — Claude Code's `!`
-prompt, its Bash tool, or any script that doesn't load `~/.zshrc`. Worse, `cc` there resolves
-to `/usr/bin/cc`, the **C compiler**, so you get `clang: no such file or directory` instead of
-a clear error. Claude Code's shell snapshot does not capture `~/.zshrc` functions either, so
-this will not start working in a newer session.
+`cc` is a zsh function, sourced from **`~/.zshenv`** — which zsh reads for *every* shell, not
+just interactive ones. `cc.zsh` then defines the command only when the shell is interactive or
+`CLAUDECODE` is set:
 
-`cc-profiles` is a real executable on the `PATH` and always works:
+| Context | `cc` resolves to |
+|---|---|
+| A terminal | the profile switcher |
+| Claude Code's `!` prompt / Bash tool (`CLAUDECODE=1`) | the profile switcher |
+| Build scripts, CI, `zsh -c` from another program | `/usr/bin/cc`, the **C compiler** |
+
+That last row is deliberate: `cc` is the C compiler's name, and a `Makefile` compiling under
+zsh must reach the real one. If `cc switch` ever fails with `clang: no such file or directory`,
+the file is being sourced from `~/.zshrc` instead of `~/.zshenv`.
+
+`cc-profiles` is a real executable on the `PATH`, so it works in every context, including
+bash:
 
 ```bash
-cc-profiles                          # = cc list, works from a Bash tool
+cc-profiles                          # = cc list
 cc-profiles switch <profile>         # = cc switch, records the pending switch
 cat ~/.claude-profiles/active        # globally active profile
 cat .cc-profile                      # this project's profile, if any

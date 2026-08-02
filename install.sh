@@ -10,6 +10,11 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${CC_BIN_DIR:-$HOME/.local/bin}"
+# .zshenv, not .zshrc: zsh reads it for every shell, including the
+# non-interactive one behind Claude Code's `!` prompt and Bash tool. cc.zsh
+# only defines the command when the shell is interactive or CLAUDECODE is set,
+# so build scripts still get /usr/bin/cc, the C compiler.
+ZSHENV="${ZDOTDIR:-$HOME}/.zshenv"
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 SKILL_DIR="$HOME/.claude/skills/claude-profiles"
 SOURCE_LINE="source \"$REPO/cc.zsh\""
@@ -28,10 +33,12 @@ done
 if [ "$uninstall" -eq 1 ]; then
   rm -f "$BIN_DIR/cc-profiles"
   [ -L "$SKILL_DIR" ] && rm -f "$SKILL_DIR"
-  if [ -f "$ZSHRC" ] && grep -qF "$SOURCE_LINE" "$ZSHRC"; then
-    grep -vF "$SOURCE_LINE" "$ZSHRC" > "$ZSHRC.tmp" && mv "$ZSHRC.tmp" "$ZSHRC"
-    echo "removed the source line from $ZSHRC"
-  fi
+  for f in "$ZSHENV" "$ZSHRC"; do          # .zshrc too: pre-0.4 installs used it
+    if [ -f "$f" ] && grep -qF "$SOURCE_LINE" "$f"; then
+      grep -vF "$SOURCE_LINE" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+      echo "removed the source line from $f"
+    fi
+  done
   echo "uninstalled. Your profiles in ~/.claude-profiles and their Keychain items were kept."
   exit 0
 fi
@@ -50,11 +57,17 @@ case ":$PATH:" in
   *) echo "warning: $BIN_DIR is not in your PATH — add it so 'cc -l' works" >&2 ;;
 esac
 
+# Migrate pre-0.4 installs that put the line in .zshrc.
 if [ -f "$ZSHRC" ] && grep -qF "$SOURCE_LINE" "$ZSHRC"; then
-  echo "$ZSHRC already sources cc.zsh"
+  grep -vF "$SOURCE_LINE" "$ZSHRC" > "$ZSHRC.tmp" && mv "$ZSHRC.tmp" "$ZSHRC"
+  echo "moved the source line out of $ZSHRC"
+fi
+
+if [ -f "$ZSHENV" ] && grep -qF "$SOURCE_LINE" "$ZSHENV"; then
+  echo "$ZSHENV already sources cc.zsh"
 else
-  printf '\n# claude-code-cc\n%s\n' "$SOURCE_LINE" >> "$ZSHRC"
-  echo "added the source line to $ZSHRC"
+  printf '\n# claude-code-cc\n%s\n' "$SOURCE_LINE" >> "$ZSHENV"
+  echo "added the source line to $ZSHENV"
 fi
 
 if [ "$with_skill" -eq 1 ]; then
