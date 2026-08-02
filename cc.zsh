@@ -288,10 +288,10 @@ _cc_main() {
     help)   _cc_help ;;
     --)     shift; command claude $CC_CLAUDE_ARGS "$@" ;;
     --profile|-l|--list|-a|--add|-s|--set)
-      # Pre-0.2 flags. None of these exist in claude, so catching them is safe
-      # and clearer than letting claude fail. `-p` is deliberately absent: it
-      # is claude's --print, and freeing it is the point of this release.
-      print -u2 "$CC_CMD: flags were replaced by subcommands in 0.2.0 — see '$CC_CMD help'"
+      # Pre-0.0.2.0 flags. None of these exist in claude, so catching them is
+      # safe and clearer than letting claude fail. `-p` is deliberately absent:
+      # it is claude's --print, and freeing it is the point of that release.
+      print -u2 "$CC_CMD: flags were replaced by subcommands in 0.0.2.0 — see '$CC_CMD help'"
       print -u2 "    '$1' is now: $CC_CMD use|list|add|set"
       return 2
       ;;

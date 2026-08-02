@@ -273,6 +273,23 @@ security delete-generic-password -a "$USER" -s "$svc"
 rm -rf ~/.claude-profiles/work
 ```
 
+## Versions
+
+Current: **0.0.5.1** (`cc-profiles --version`).
+
+Versions carry four components — `0.0.MINOR.PATCH` — so this is deliberately not semver. The
+leading zeros say what they look like: nothing here is stable yet.
+
+| Version | What it brought |
+|---|---|
+| 0.0.5.0 | `cc switch` relaunches the session itself — one Ctrl+D and you're on the other account |
+| 0.0.4.0 | Sourced from `.zshenv`, so `cc` works in Claude Code's `!` prompt without shadowing the C compiler in scripts |
+| 0.0.3.0 | `cc-profiles switch`, reachable from non-interactive shells |
+| 0.0.2.x | Subcommands replaced flags; `-p` went back to being claude's `--print` |
+| 0.0.1.0 | First release: profiles, `.cc-profile`, usage table |
+
+Full notes: [releases](https://github.com/stevearagonsite/claude-code-cc/releases).
+
 ## License
 
 MIT

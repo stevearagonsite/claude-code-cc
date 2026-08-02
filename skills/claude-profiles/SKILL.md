@@ -10,7 +10,7 @@ description: >
   another.
 metadata:
   type: reference
-  version: "0.0.5.0"
+  version: "0.0.5.1"
 ---
 
 # Claude Code account profiles
