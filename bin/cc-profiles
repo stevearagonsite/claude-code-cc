@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 PROFILES_DIR = Path(
     os.environ.get("CLAUDE_PROFILES_DIR") or Path.home() / ".claude-profiles"
@@ -233,12 +233,12 @@ def record_switch(profile):
     if session:
         (PROFILES_DIR / "pending-switch").write_text(f"{profile} {session}\n")
 
-    print(f"To switch to '{profile}', exit this session (Ctrl+D) and run:")
-    print()
-    print("    cc switch")
+    print(f"Switch to '{profile}' armed. Exit this session (Ctrl+D) and it comes")
+    print("back automatically on the other account, same conversation.")
     if session:
         print()
-        print("  or, from any terminal:")
+        print("  If you started Claude with plain `claude` instead of `cc`, nothing")
+        print("  will relaunch — run this in your terminal:")
         print(f"    cc use {profile} --resume {session}")
     return 0
 

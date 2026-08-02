@@ -203,8 +203,8 @@ _cc_help() {
     && print "here:     $(_cc_profile_read_file "$f")  (${f/#$HOME/~})"
 }
 
-# Launch claude, optionally overriding the profile for this invocation only.
-_cc_launch() {
+# One run of claude, optionally overriding the profile for this invocation only.
+_cc_exec() {
   local name="$1"; shift
   if [[ -z "$name" ]]; then
     command claude $CC_CLAUDE_ARGS "$@"
@@ -216,6 +216,38 @@ _cc_launch() {
     CLAUDE_SECURESTORAGE_CONFIG_DIR="$(_cc_profile_dir "$name")" \
       command claude $CC_CLAUDE_ARGS "$@"
   fi
+}
+
+# Launch claude, and relaunch it if the session asked for a profile switch on
+# the way out. This function is claude's parent, so when the child exits we are
+# still alive and can start it again with --resume: same conversation, other
+# account. A running process can't change its own credentials — the token is
+# memoized in memory and only re-read on refresh or a 401 — so relaunching is
+# the only reliable way.
+_cc_launch() {
+  local name="$1"; shift
+  local -a args=("$@")
+  local pending="$CLAUDE_PROFILES_DIR/pending-switch"
+  local rc pname psid
+
+  while true; do
+    _cc_exec "$name" "${args[@]}"
+    rc=$?
+
+    [[ -r "$pending" ]] || return $rc
+    if [[ -n "$(find "$pending" -mmin +60 2>/dev/null)" ]]; then
+      rm -f "$pending"; return $rc            # stale, don't revive an old switch
+    fi
+
+    pname=""; psid=""
+    read -r pname psid < "$pending"
+    rm -f "$pending"                          # consume BEFORE relaunching
+    [[ -n "$pname" && -n "$psid" ]] || return $rc
+
+    _cc_profile_activate "$pname" || return $?   # bad profile: stop, don't loop
+    name="$pname"; args=(--resume "$psid")
+    print "$CC_CMD: switching to '$name'…"
+  done
 }
 
 # Default path: the directory's profile file wins, but only for this

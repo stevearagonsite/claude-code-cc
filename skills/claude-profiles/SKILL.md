@@ -10,7 +10,7 @@ description: >
   another.
 metadata:
   type: reference
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
 # Claude Code account profiles
@@ -91,18 +91,24 @@ marks the active one with `*` and adds a line for the current directory.
 
 ## Switching mid-conversation
 
-A running process never re-reads its credentials, so switching accounts means relaunching. The
-conversation survives because history lives in `~/.claude`, shared across profiles.
-
 Inside a session, `cc switch <profile>` (from the `!` prompt or the Bash tool) records the
-request — profile + `$CLAUDE_CODE_SESSION_ID` in `~/.claude-profiles/pending-switch` — and
-prints the exact command to run after exiting. Outside a session, `cc switch` consumes that
-pending request and relaunches with `--resume <id>` under the new profile. The pending request
-is used once and ignored after an hour; without one, `cc switch <profile>` falls back to
-`--continue`.
+request — profile + `$CLAUDE_CODE_SESSION_ID` in `~/.claude-profiles/pending-switch`. **Exiting
+is all that's left**: `cc` is claude's parent process, so when the child exits it activates the
+profile and relaunches with `--resume <id>`. Same conversation, other account. History lives in
+`~/.claude`, which is shared, so nothing is lost.
+
+The pending request is consumed once, ignored after an hour, and a bad profile name stops the
+loop instead of retrying. If Claude was started with plain `claude` (no parent `cc`), nothing
+relaunches — `cc switch` in a terminal picks up the recorded request instead.
 
 `cc-profiles switch <profile>` does the same recording and is a real executable, so it works
 from bash or any shell that never sources `cc.zsh`.
+
+**Why not switch without restarting:** the token is memoized in the process (`vB`/`ms`) over a
+30-second Keychain cache, and those memos are only cleared on a token refresh (~8 h) or a 401.
+Writing another blob into the Keychain does not wake a live session, and the invalidation can't
+be forced from outside. `/login` does switch live, but it overwrites the active profile's
+Keychain item and breaks the profile → account mapping.
 
 ## `.cc-profile` (per-project profile)
 

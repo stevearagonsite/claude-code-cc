@@ -160,28 +160,43 @@ Write it with `cc set work`; remove it with `cc set`.
 
 ## Switching mid-conversation
 
-A running process never re-reads its credentials, so switching accounts means relaunching. The
-conversation survives, because history lives in `~/.claude`, which is shared across profiles.
-
-From inside a Claude Code session, use the `!` prompt to run `cc switch personal`:
+From inside a session, use the `!` prompt to arm the switch, then exit. `cc` brings the session
+back on the other account by itself:
 
 ```
-To switch to 'personal', exit this session (Ctrl+D) and run:
+!cc switch personal
+  Switch to 'personal' armed. Exit this session (Ctrl+D) and it comes
+  back automatically on the other account, same conversation.
 
-    cc switch
-
-  or, from any terminal:
-    cc use personal --resume aadee50a-3864-4a5d-8f7c-905d7187e28f
+# Ctrl+D
+cc: switching to 'personal'…
+  → claude restarts with --resume <id>
 ```
 
-Exit, run `cc switch`, and you're back in the same conversation on the other account. The
-pending request is consumed once and ignored after an hour.
+That works because `cc` is claude's **parent process**: when the child exits, the function is
+still alive and relaunches it. The conversation survives because history lives in `~/.claude`,
+which is shared across profiles.
 
-If you didn't record anything first, `cc switch <profile>` falls back to `--continue`, which
-resumes the most recent conversation in the current directory.
+The pending request is consumed once — a stale one is ignored after an hour, and a bad profile
+name stops the loop instead of retrying.
+
+**If you started Claude with plain `claude` instead of `cc`**, there is no parent to relaunch
+anything. The request stays recorded; run `cc switch` in your terminal to pick it up.
 
 `cc-profiles switch <profile>` does the same recording and is a real executable, so it also
 works from bash or any shell that never sees `cc.zsh`.
+
+### Why it can't switch without restarting
+
+The account can't change inside a live process. Claude Code memoizes the access token in memory
+(`vB`/`ms`) on top of a 30-second Keychain cache, and those memos are only cleared when the
+token is refreshed — roughly every 8 hours — or when a request comes back 401. Writing a
+different credential blob into the Keychain does not wake the running session, and there is no
+way to force the invalidation from outside, because the decision to refresh is made by reading
+the very token held in memory.
+
+`/login` does switch a live session, but it overwrites the active profile's Keychain item,
+which is exactly the profile → account mapping this tool exists to keep.
 
 ## How it works
 
