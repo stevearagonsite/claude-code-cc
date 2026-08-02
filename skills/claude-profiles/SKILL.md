@@ -2,15 +2,15 @@
 name: claude-profiles
 description: >
   Multiple Claude Code accounts authenticated in parallel on this machine, switched with
-  `cc -p <profile>`, pinned per project with a `.cc-profile` file (like .nvmrc), and inspected
-  with `cc -l` to see how much limit is left on each. Use when asked to switch Claude Code
+  `cc use <profile>`, pinned per project with a `.cc-profile` file (like .nvmrc), and inspected
+  with `cc list` to see how much limit is left on each. Use when asked to switch Claude Code
   account or subscription, to tell which account is in use, to pin the account for a repo or
   directory, to check remaining usage (5h session window, weekly, or per model), to diagnose an
   unexpected login prompt, or when one account runs out of limit and work has to move to
   another.
 metadata:
   type: reference
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Claude Code account profiles
@@ -41,36 +41,64 @@ To see which profiles exist: `ls ~/.claude-profiles/` (directories only; `active
 
 ## Commands
 
-Everything hangs off `cc` (a zsh function). Flags that don't launch Claude stop there.
+Everything hangs off `cc` (a zsh function), which uses **subcommands**. The first argument
+decides: a known verb belongs to `cc`, anything else is passed straight to `claude` untouched —
+so `claude`'s own flags never collide.
 
 | Command | What it does | Launches Claude? |
 |---|---|---|
 | `cc [args…]` | Effective profile, with the configured claude args | yes |
-| `cc -p\|--profile <n>` | Switch the global profile and launch (`default` = original slot) | yes |
-| `cc -s\|--set <n>` | Write `./.cc-profile` | no |
-| `cc -s\|--set` | Remove `./.cc-profile` | no |
-| `cc -a\|--add <n>` | Create profile `<n>` by cloning the **active** profile's blob | no |
-| `cc -l\|--list` | Profile table with remaining limits | no |
-| `cc -h\|--help` | Help, plus active and per-directory profile | no |
+| `cc use <n> [args…]` | Switch the global profile and launch (`default` = original slot) | yes |
+| `cc switch [<n>]` | Switch profile keeping the current conversation | yes |
+| `cc list` | Profile table with remaining limits | no |
+| `cc add <n>` | Create profile `<n>` by cloning the **active** profile's blob | no |
+| `cc set [<n>]` | Write `./.cc-profile` (no argument removes it) | no |
+| `cc help` | Help, plus active and per-directory profile | no |
 
-After `cc -a <n>` the new profile is a clone of the current session — enter it once with
-`cc -p <n>` and run `/login` with the other account.
+Delegation examples — all of these reach `claude` as-is:
+
+```bash
+cc -p "explain this"        # claude's --print, NOT a profile flag
+cc --resume <session-id>
+cc use work --resume <id>   # profile AND resume
+cc -- list                  # escape hatch: send "list" to claude
+```
+
+After `cc add <n>` the new profile is a clone of the current session — enter it once with
+`cc use <n>` and run `/login` with the other account.
 
 The command name may differ: it is set by `CC_CMD` at install time (`cc` by default, because
 `cc` shadows `/usr/bin/cc`, the C compiler).
 
 ## Which profile is actually used
 
-Three layers, highest priority first:
+Four layers; the first that applies wins:
 
-1. **`cc -p <n>`** — explicit. Always wins and **persists**: written to
-   `~/.claude-profiles/active` and exported by each new shell, so plain `claude` follows it too.
-2. **`.cc-profile`** in the current directory or a parent — override for **that invocation
-   only**. Does not touch the active profile and does not affect plain `claude`.
-3. **Active profile** — whatever `-p` set last.
+| # | Layer | Scope | Persists? |
+|---|---|---|---|
+| 1 | `cc use <n>` / `cc switch <n>` | Sets the global profile, then launches | **Yes** — writes `~/.claude-profiles/active` |
+| 2 | `./.cc-profile` (nearest, walking up to `$HOME`) | That invocation of `cc` only | No |
+| 3 | `CLAUDE_SECURESTORAGE_CONFIG_DIR` in the environment | That shell and its children | Per shell |
+| 4 | Nothing set → the `default` Keychain item | — | — |
 
-An already-open terminal keeps the global profile it started with. When in doubt, `cc -l` marks
-the active one with `*` and adds a line for the current directory.
+Layer 1 is global: `~/.claude-profiles/active` is re-exported by every new shell, so plain
+`claude` follows it too, not only `cc`. Layer 2 never persists — leaving the directory is enough
+to go back — and if the file names a profile that doesn't exist, `cc` exits 2 without launching
+Claude rather than falling through to layer 3.
+
+An already-open terminal keeps the global profile it started with. When in doubt, `cc list`
+marks the active one with `*` and adds a line for the current directory.
+
+## Switching mid-conversation
+
+A running process never re-reads its credentials, so switching accounts means relaunching. The
+conversation survives because history lives in `~/.claude`, shared across profiles.
+
+Inside a session, `!cc switch <profile>` records the request (profile + `$CLAUDE_CODE_SESSION_ID`
+in `~/.claude-profiles/pending-switch`) and prints the exact command to run after exiting.
+Outside a session, `cc switch` consumes that pending request and relaunches with
+`--resume <id>` under the new profile. The pending request is used once and ignored after an
+hour; without one, `cc switch <profile>` falls back to `--continue`.
 
 ## `.cc-profile` (per-project profile)
 
@@ -90,9 +118,9 @@ cc: profile 'work' (.cc-profile in ~/src/some-repo)
 If the file names a profile that does not exist, **`cc` exits 2 and does not launch Claude** —
 the point is to avoid burning the wrong account's quota on a typo.
 
-Write it with `cc -s work`; `cc -s` alone removes it.
+Write it with `cc set work`; `cc set` alone removes it.
 
-## Reading `cc -l`
+## Reading `cc list`
 
 ```
   PROFILE   PLAN         5h     7d   MODEL       RESET
@@ -128,14 +156,14 @@ detected by reading `expiresAt` from the blob, without hitting the API.
 Bash tool. The listing, however, is an executable on the `PATH`:
 
 ```bash
-cc-profiles                          # = cc -l, works from a Bash tool
+cc-profiles                          # = cc list, works from a Bash tool
 cat ~/.claude-profiles/active        # globally active profile
 cat .cc-profile                      # this project's profile, if any
 
-# equivalent of `cc -p <profile>` for a one-off command:
+# equivalent of `cc use <profile>` for a one-off command:
 CLAUDE_SECURESTORAGE_CONFIG_DIR="$HOME/.claude-profiles/work" claude -p "…"
 
-zsh -ic 'cc -h'                      # or load the functions explicitly
+zsh -ic 'cc help'                    # or load the functions explicitly
 ```
 
 Never set `CLAUDE_SECURESTORAGE_CONFIG_DIR=""`: an empty string means the default and collapses
@@ -160,7 +188,7 @@ re-authorized through the browser. A later `/login` overwrites only `claudeAiOau
 **Careful with the email shown by `/status` and the statusline**: it comes from `oauthAccount`
 in `~/.claude.json`, which is shared, so it reflects whichever profile logged in or refreshed a
 token last. It can be stale. Actual API calls do use the right account. Reliable sources:
-`cc -l` and `/usage`, both of which read the API's counters.
+`cc list` and `/usage`, both of which read the API's counters.
 
 MCP servers hosted by claude.ai are tied to the account that authorized them: under a different
 profile they may return 401 and ask for re-auth. Self-hosted or third-party MCP servers do not
@@ -188,7 +216,7 @@ Look for `` `Claude Code${OAUTH_FILE_SUFFIX}${e}${o}` `` with `o = -sha256(dir)[
 changed, the fallback is a per-profile `CLAUDE_CONFIG_DIR` plus symlinks for `settings.json`,
 `skills/`, `plugins/`, `agents/`, `commands/` and `CLAUDE.md` back into `~/.claude`.
 
-`cc -a` refuses to overwrite an existing profile. To re-seed MCP tokens into one that is
+`cc add` refuses to overwrite an existing profile. To re-seed MCP tokens into one that is
 already logged in, delete it first — which **also deletes its login**, so another `/login`
 follows:
 
@@ -196,7 +224,7 @@ follows:
 svc="Claude Code-credentials-$(printf '%s' "$HOME/.claude-profiles/<n>" | shasum -a 256 | cut -c1-8)"
 security delete-generic-password -a "$USER" -s "$svc"
 rm -rf ~/.claude-profiles/<n>
-cc -a <n>          # clones from the active profile again
+cc add <n>          # clones from the active profile again
 ```
 
 That same pair of commands is how you **delete** a profile.

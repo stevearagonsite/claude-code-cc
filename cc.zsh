@@ -46,7 +46,7 @@ _cc_profile_activate() {
   dir="$(_cc_profile_dir "$name")"
   if [[ ! -d "$dir" ]]; then
     print -u2 "$CC_CMD: unknown profile '$name' ($(_cc_profile_names | tr '\n' ' ')default)"
-    print -u2 "    create it with: $CC_CMD -a $name"
+    print -u2 "    create it with: $CC_CMD add $name"
     return 2
   fi
   export CLAUDE_SECURESTORAGE_CONFIG_DIR="$dir"
@@ -87,7 +87,7 @@ _cc_profile_add() {
   if security add-generic-password -U -a "$USER" -s "$svc" \
        -X "$(printf '%s' "$blob" | xxd -p | tr -d '\n')"; then
     print "profile '$name' created (clone of the current session, with its MCP tokens)"
-    print "next:  $CC_CMD -p $name   then run  /login  with the other account"
+    print "next:  $CC_CMD use $name   then run  /login  with the other account"
   else
     rmdir "$dir" 2>/dev/null
     return 1
@@ -130,22 +130,87 @@ _cc_profile_set() {
   fi
   if [[ "$name" != default && ! -d "$(_cc_profile_dir "$name")" ]]; then
     print -u2 "$CC_CMD: unknown profile '$name' ($(_cc_profile_names | tr '\n' ' ')default)"
-    print -u2 "    create it with: $CC_CMD -a $name"
+    print -u2 "    create it with: $CC_CMD add $name"
     return 2
   fi
   print "$name" > "$CC_PROFILE_FILE" \
     && print "$PWD/$CC_PROFILE_FILE -> $name"
 }
 
+# --- switching profiles without losing the conversation ---------------------
+
+# A running process never re-reads its credentials, so switching means
+# relaunching with --resume. History lives in ~/.claude, which is shared.
+_cc_profile_switch() {
+  local name="$1" pending="$CLAUDE_PROFILES_DIR/pending-switch" sid
+
+  # Inside a Claude Code session we cannot replace the running process:
+  # record the request and tell the user what to run after exiting.
+  if [[ -n "$CLAUDECODE" ]]; then
+    if [[ -z "$name" ]]; then
+      print -u2 "$CC_CMD: switch to which profile? ($(_cc_profile_names | tr '\n' ' ')default)"
+      return 2
+    fi
+    if [[ "$name" != default && ! -d "$(_cc_profile_dir "$name")" ]]; then
+      print -u2 "$CC_CMD: unknown profile '$name' ($(_cc_profile_names | tr '\n' ' ')default)"
+      return 2
+    fi
+    sid="$CLAUDE_CODE_SESSION_ID"
+    if [[ -n "$sid" ]]; then
+      mkdir -p "$CLAUDE_PROFILES_DIR" && print "$name $sid" > "$pending"
+    fi
+    print "$CC_CMD: to switch to '$name', exit this session (Ctrl+D) and run:"
+    print
+    print "    $CC_CMD switch"
+    print
+    if [[ -n "$sid" ]]; then
+      print "  or, from any terminal:"
+      print "    $CC_CMD use $name --resume $sid"
+    fi
+    return 0
+  fi
+
+  # Outside a session: consume the pending request, if any.
+  if [[ -r "$pending" ]]; then
+    if [[ -n "$(find "$pending" -mmin +60 2>/dev/null)" ]]; then
+      rm -f "$pending"                     # stale, don't revive an old switch
+    else
+      local pname psid
+      read -r pname psid < "$pending"
+      [[ -n "$name" ]] || name="$pname"
+      sid="$psid"
+      rm -f "$pending"
+    fi
+  fi
+
+  if [[ -z "$name" ]]; then
+    print -u2 "$CC_CMD: nothing pending. Run '$CC_CMD switch <profile>' inside a session,"
+    print -u2 "    or '$CC_CMD use <profile> --continue' to switch and pick up the last chat."
+    return 2
+  fi
+  _cc_profile_activate "$name" || return $?
+
+  # With no session id, --continue resumes the most recent chat in this
+  # directory, which is the one just left.
+  if [[ -n "$sid" ]]; then
+    _cc_launch "" --resume "$sid"
+  else
+    _cc_launch "" --continue
+  fi
+}
+
 _cc_help() {
-  print "usage: $CC_CMD [options] [claude args...]"
+  print "usage: $CC_CMD [claude args...]"
   print
-  print "  -p, --profile <n>  use profile <n> and launch Claude (becomes the active one)"
-  print "  -s, --set <n>      pin this directory to profile <n> in ./$CC_PROFILE_FILE"
-  print "  -s, --set          remove ./$CC_PROFILE_FILE"
-  print "  -a, --add <n>      create profile <n> by cloning the active session"
-  print "  -l, --list         list profiles with their remaining limits"
-  print "  -h, --help         this help"
+  print "  $CC_CMD use <n> [args...]   switch to profile <n> and launch Claude"
+  print "  $CC_CMD switch [<n>]        switch profile, keeping the conversation"
+  print "  $CC_CMD list                list profiles with their remaining limits"
+  print "  $CC_CMD add <n>             create profile <n> by cloning the active session"
+  print "  $CC_CMD set [<n>]           pin this directory in ./$CC_PROFILE_FILE (no arg: remove)"
+  print "  $CC_CMD help                this help"
+  print
+  print "Anything else is passed straight to claude, so '$CC_CMD -p \"…\"' and"
+  print "'$CC_CMD --resume <id>' work as usual. Use '$CC_CMD -- <args>' to force it."
   print
   print "profiles: $(_cc_profile_names | tr '\n' ' ')default"
   print "active:   $(cat "$CLAUDE_PROFILES_DIR/active" 2>/dev/null || print default)"
@@ -154,45 +219,68 @@ _cc_help() {
     && print "here:     $(_cc_profile_read_file "$f")  (${f/#$HOME/~})"
 }
 
-_cc_main() {
-  local explicit=0
-  while (( $# )); do
-    case "$1" in
-      -p|--profile) _cc_profile_activate "$2" || return $?; explicit=1; shift 2 ;;
-      -s|--set)     _cc_profile_set "$2"; return $? ;;
-      -a|--add)     _cc_profile_add "$2"; return $? ;;
-      -l|--list)    cc-profiles; return $? ;;
-      -h|--help)    _cc_help; return 0 ;;
-      *) break ;;
-    esac
-  done
+# Launch claude, optionally overriding the profile for this invocation only.
+_cc_launch() {
+  local name="$1"; shift
+  if [[ -z "$name" ]]; then
+    command claude $CC_CLAUDE_ARGS "$@"
+  elif [[ "$name" == default ]]; then
+    # Subshell: the unset stays here, and the child does not inherit it.
+    ( unset CLAUDE_SECURESTORAGE_CONFIG_DIR
+      command claude $CC_CLAUDE_ARGS "$@" )
+  else
+    CLAUDE_SECURESTORAGE_CONFIG_DIR="$(_cc_profile_dir "$name")" \
+      command claude $CC_CLAUDE_ARGS "$@"
+  fi
+}
 
-  # Without an explicit -p, the directory's profile file wins — but only for
-  # this invocation: it never touches the globally active profile.
+# Default path: the directory's profile file wins, but only for this
+# invocation — it never touches the globally active profile.
+_cc_launch_effective() {
   local file name
-  if (( ! explicit )) && file="$(_cc_profile_find_file)"; then
+  if file="$(_cc_profile_find_file)"; then
     name="$(_cc_profile_read_file "$file")"
     if [[ -n "$name" ]]; then
       if [[ "$name" != default && ! -d "$(_cc_profile_dir "$name")" ]]; then
         print -u2 "$CC_CMD: ${file/#$HOME/~} points at '$name', which does not exist"
         print -u2 "    profiles: $(_cc_profile_names | tr '\n' ' ')default"
-        print -u2 "    create it with: $CC_CMD -a $name"
+        print -u2 "    create it with: $CC_CMD add $name"
         return 2
       fi
       print "$CC_CMD: profile '$name' ($CC_PROFILE_FILE in ${${file:h}/#$HOME/~})"
-      if [[ "$name" == default ]]; then
-        # Subshell: the unset stays here, and the child does not inherit it.
-        ( unset CLAUDE_SECURESTORAGE_CONFIG_DIR
-          command claude $CC_CLAUDE_ARGS "$@" )
-      else
-        CLAUDE_SECURESTORAGE_CONFIG_DIR="$(_cc_profile_dir "$name")" \
-          command claude $CC_CLAUDE_ARGS "$@"
-      fi
+      _cc_launch "$name" "$@"
       return $?
     fi
   fi
+  _cc_launch "" "$@"
+}
 
-  command claude $CC_CLAUDE_ARGS "$@"
+# The first argument decides: a known verb is ours, anything else goes to
+# claude untouched. That way a new claude flag can never collide with us.
+_cc_main() {
+  case "$1" in
+    use)
+      shift
+      _cc_profile_activate "$1" || return $?
+      shift
+      _cc_launch "" "$@"
+      ;;
+    switch) shift; _cc_profile_switch "$1" ;;
+    list)   cc-profiles ;;
+    add)    _cc_profile_add "$2" ;;
+    set)    _cc_profile_set "$2" ;;
+    help)   _cc_help ;;
+    --)     shift; command claude $CC_CLAUDE_ARGS "$@" ;;
+    --profile|-l|--list|-a|--add|-s|--set)
+      # Pre-0.2 flags. None of these exist in claude, so catching them is safe
+      # and clearer than letting claude fail. `-p` is deliberately absent: it
+      # is claude's --print, and freeing it is the point of this release.
+      print -u2 "$CC_CMD: flags were replaced by subcommands in 0.2.0 — see '$CC_CMD help'"
+      print -u2 "    '$1' is now: $CC_CMD use|list|add|set"
+      return 2
+      ;;
+    *)      _cc_launch_effective "$@" ;;
+  esac
 }
 
 eval "${CC_CMD}() { _cc_main \"\$@\" }"
