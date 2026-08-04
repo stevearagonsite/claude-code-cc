@@ -86,6 +86,7 @@ else is passed straight to `claude`, untouched.
 | `cc use <n> [args…]` | Switch to profile `<n>` and launch (`default` = the original slot) | yes |
 | `cc switch [<n>]` | Switch profile, keeping the current conversation | yes |
 | `cc list` | List profiles with remaining limits | no |
+| `cc whoami [<n>]` | Which account this session's token belongs to | no |
 | `cc add <n>` | Create profile `<n>` by cloning the active session | no |
 | `cc set [<n>]` | Pin this directory via `./.cc-profile` (no argument removes it) | no |
 | `cc help` | Help, plus the active and per-directory profile | no |
@@ -102,6 +103,32 @@ cc -- list                     # escape hatch: send "list" to claude
 
 Profiles aren't hardcoded — they're the subdirectories of `~/.claude-profiles`, so `cc add`
 accepts any name.
+
+## Which account am I on?
+
+```
+$ cc whoami
+
+  email    you@personal.example
+  name     You
+  plan     max · 20x
+  org      you@personal.example's Organization
+  profile  personal
+```
+
+`cc whoami` derives the Keychain item from the `CLAUDE_SECURESTORAGE_CONFIG_DIR` of the process
+that runs it, reads that token, and asks `GET https://api.anthropic.com/api/oauth/profile` who it
+belongs to. Nothing is inferred from a marker file, so it can't drift.
+
+Run it from Claude Code's `!` prompt or Bash tool — both inherit the variable, so you get the
+account the *running session* authenticates with, not the one a new session would pick up. Pass a
+name (`cc whoami work`) to ask about a different profile instead.
+
+When the answer disagrees with `/status`, `cc whoami` says so — `/status` reads a shared field
+(see the caveat below), and it is the one that's wrong.
+
+The only case where `cc whoami` can mislead: if you ran `/login` mid-session, the process keeps
+using the token it memoized while the Keychain item already holds a new one.
 
 ## Which profile wins
 
@@ -253,8 +280,9 @@ do, install with a different name: `CC_CMD=ccx source .../cc.zsh`.
 
 **`/status` may show the wrong email.** The account shown comes from `oauthAccount` in
 `~/.claude.json`, which is shared across profiles, so it reflects whichever profile logged in
-or refreshed a token last. API calls still use the correct account. `cc list` and `/usage` are
-the reliable sources.
+or refreshed a token last — it does not follow a switch. API calls still use the correct
+account. Ask `cc whoami` instead; the field corrects itself on the next token refresh (~8h) or
+any `/login`, and editing it by hand while a session is running gets overwritten.
 
 **MCP OAuth tokens are per profile.** They live in the same Keychain blob as the account, which
 is why `cc add` clones instead of starting empty. Note that claude.ai-hosted MCP connectors are
@@ -275,13 +303,14 @@ rm -rf ~/.claude-profiles/work
 
 ## Versions
 
-Current: **0.0.5.1** (`cc-profiles --version`).
+Current: **0.0.6.0** (`cc-profiles --version`).
 
 Versions carry four components — `0.0.MINOR.PATCH` — so this is deliberately not semver. The
 leading zeros say what they look like: nothing here is stable yet.
 
 | Version | What it brought |
 |---|---|
+| 0.0.6.0 | `cc whoami` — asks the API which account the running session's token belongs to, since `/status` can't be trusted after a switch |
 | 0.0.5.0 | `cc switch` relaunches the session itself — one Ctrl+D and you're on the other account |
 | 0.0.4.0 | Sourced from `.zshenv`, so `cc` works in Claude Code's `!` prompt without shadowing the C compiler in scripts |
 | 0.0.3.0 | `cc-profiles switch`, reachable from non-interactive shells |

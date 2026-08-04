@@ -189,6 +189,7 @@ _cc_help() {
   print "  $CC_CMD use <n> [args...]   switch to profile <n> and launch Claude"
   print "  $CC_CMD switch [<n>]        switch profile, keeping the conversation"
   print "  $CC_CMD list                list profiles with their remaining limits"
+  print "  $CC_CMD whoami [<n>]        which account this session's token belongs to"
   print "  $CC_CMD add <n>             create profile <n> by cloning the active session"
   print "  $CC_CMD set [<n>]           pin this directory in ./$CC_PROFILE_FILE (no arg: remove)"
   print "  $CC_CMD help                this help"
@@ -283,6 +284,7 @@ _cc_main() {
       ;;
     switch) shift; _cc_profile_switch "$1" ;;
     list)   cc-profiles ;;
+    whoami) cc-profiles whoami "$2" ;;
     add)    _cc_profile_add "$2" ;;
     set)    _cc_profile_set "$2" ;;
     help)   _cc_help ;;

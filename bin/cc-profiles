@@ -11,6 +11,10 @@ profile).
 
 Percentages shown are AVAILABLE (100 - utilization). They are not absolute token
 counts: the API exposes percentage utilization per window.
+
+    cc-profiles                  list profiles with their remaining limits
+    cc-profiles whoami [<n>]     account behind the running session's token
+    cc-profiles switch <n>       arm a profile switch for the current session
 """
 
 import hashlib
@@ -26,13 +30,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.0.5.1"
+__version__ = "0.0.6.0"
 
 PROFILES_DIR = Path(
     os.environ.get("CLAUDE_PROFILES_DIR") or Path.home() / ".claude-profiles"
 )
 PROFILE_FILE = os.environ.get("CC_PROFILE_FILE") or ".cc-profile"
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
+CLAUDE_JSON = Path.home() / ".claude.json"
 DEFAULT_SERVICE = "Claude Code-credentials"
 TIMEOUT = 5
 DASH = "—"
@@ -40,20 +46,24 @@ DASH = "—"
 
 # --- credentials ------------------------------------------------------------
 
-def service_name(profile):
+def service_for_dir(path):
     """Same computation Claude Code uses to name the Keychain item."""
-    if profile == "default":
-        return DEFAULT_SERVICE
-    path = unicodedata.normalize("NFC", str(PROFILES_DIR / profile))
-    digest = hashlib.sha256(path.encode()).hexdigest()[:8]
+    norm = unicodedata.normalize("NFC", str(path))
+    digest = hashlib.sha256(norm.encode()).hexdigest()[:8]
     return f"{DEFAULT_SERVICE}-{digest}"
 
 
-def read_blob(profile):
+def service_name(profile):
+    if profile == "default":
+        return DEFAULT_SERVICE
+    return service_for_dir(PROFILES_DIR / profile)
+
+
+def read_service(service):
     try:
         out = subprocess.run(
             ["security", "find-generic-password",
-             "-a", os.environ.get("USER", ""), "-w", "-s", service_name(profile)],
+             "-a", os.environ.get("USER", ""), "-w", "-s", service],
             capture_output=True, text=True, timeout=TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError):
@@ -64,6 +74,10 @@ def read_blob(profile):
         return json.loads(out.stdout.strip())
     except json.JSONDecodeError:
         return None
+
+
+def read_blob(profile):
+    return read_service(service_name(profile))
 
 
 def profile_names():
@@ -108,8 +122,8 @@ def dir_profile():
 
 # --- API --------------------------------------------------------------------
 
-def fetch_usage(token):
-    req = urllib.request.Request(USAGE_URL, headers={
+def fetch(url, token):
+    req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}",
         "anthropic-beta": "oauth-2025-04-20",
         "Content-Type": "application/json",
@@ -121,6 +135,16 @@ def fetch_usage(token):
         return {"_error": "token rejected" if exc.code in (401, 403) else f"HTTP {exc.code}"}
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
         return {"_error": "offline"}
+
+
+def fetch_usage(token):
+    return fetch(USAGE_URL, token)
+
+
+def fetch_account(token):
+    """Who the token belongs to. This is the only answer that can't go stale:
+    it asks the API about the very token the session authenticates with."""
+    return fetch(PROFILE_URL, token)
 
 
 # --- formatting -------------------------------------------------------------
@@ -207,6 +231,87 @@ def pct(value):
     return DASH if value is None else f"{value}%"
 
 
+# --- whoami -----------------------------------------------------------------
+
+def session_credentials():
+    """(Keychain item, label) for the profile THIS process is using.
+
+    Reads CLAUDE_SECURESTORAGE_CONFIG_DIR from the environment rather than the
+    `active` marker: the variable is what Claude Code itself reads, so it stays
+    correct for a session started before the marker last changed, and inside
+    Claude Code's `!` prompt and Bash tool, which inherit it.
+    """
+    raw = (os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR") or "").strip()
+    if not raw:
+        return DEFAULT_SERVICE, "default"
+    path = Path(raw)
+    name = path.name if path.parent == PROFILES_DIR else str(path)
+    return service_for_dir(path), name
+
+
+def show_whoami(profile):
+    """Print the account behind a profile's token, straight from the API."""
+    if profile:
+        if profile != "default" and not (PROFILES_DIR / profile).is_dir():
+            print(f"cc-profiles: unknown profile '{profile}' ({' '.join(profile_names())})",
+                  file=sys.stderr)
+            return 2
+        service, label = service_name(profile), profile
+    else:
+        service, label = session_credentials()
+
+    blob = read_service(service)
+    if not blob:
+        print(f"cc-profiles: no credentials in '{label}' ({service})", file=sys.stderr)
+        return 1
+
+    oauth = blob.get("claudeAiOauth") or {}
+    expires = oauth.get("expiresAt")
+    token = oauth.get("accessToken")
+    if not token:
+        print(f"cc-profiles: no session in '{label}'", file=sys.stderr)
+        return 1
+    if expires and expires / 1000 < time.time():
+        print(f"cc-profiles: the token in '{label}' expired — run 'cc use {label}' to refresh it",
+              file=sys.stderr)
+        return 1
+
+    payload = fetch_account(token)
+    if "_error" in payload:
+        print(f"cc-profiles: {payload['_error']}", file=sys.stderr)
+        return 1
+
+    account = payload.get("account") or {}
+    org = payload.get("organization") or {}
+    email = account.get("email") or DASH
+    rows = [
+        ("email", email),
+        ("name", account.get("display_name") or account.get("full_name") or DASH),
+        ("plan", plan_label(oauth)),
+        ("org", org.get("name") or DASH),
+        ("profile", label),
+    ]
+    width = max(len(k) for k, _ in rows)
+    print()
+    for key, value in rows:
+        print(f"  {key:<{width}}  {value}")
+
+    # The email in /status and in the statusline comes from a field shared by
+    # every profile, so it lags behind a switch. Say so when they disagree.
+    try:
+        shown = (json.loads(CLAUDE_JSON.read_text()).get("oauthAccount") or {}) \
+            .get("emailAddress")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        shown = None
+    if shown and shown != email:
+        print()
+        print(f"  note  /status says {shown} — that field (oauthAccount in")
+        print("        ~/.claude.json) is shared across profiles and goes stale.")
+        print("        The account above is the one the API sees.")
+    print()
+    return 0
+
+
 def record_switch(profile):
     """Record a profile switch for the current session.
 
@@ -252,6 +357,8 @@ def main(argv):
         return 0
     if argv and argv[0] == "switch":
         return record_switch(argv[1] if len(argv) > 1 else "")
+    if argv and argv[0] == "whoami":
+        return show_whoami(argv[1] if len(argv) > 1 else "")
 
     names = profile_names()
     active = active_profile()

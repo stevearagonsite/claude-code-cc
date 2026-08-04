@@ -51,6 +51,7 @@ so `claude`'s own flags never collide.
 | `cc use <n> [args…]` | Switch the global profile and launch (`default` = original slot) | yes |
 | `cc switch [<n>]` | Switch profile keeping the current conversation | yes |
 | `cc list` | Profile table with remaining limits | no |
+| `cc whoami [<n>]` | Which account this session's token belongs to | no |
 | `cc add <n>` | Create profile `<n>` by cloning the **active** profile's blob | no |
 | `cc set [<n>]` | Write `./.cc-profile` (no argument removes it) | no |
 | `cc help` | Help, plus active and per-directory profile | no |
@@ -160,6 +161,30 @@ other).
 States without numbers: `(no session)`, `token expired`, `token rejected`, `offline`. Expiry is
 detected by reading `expiresAt` from the blob, without hitting the API.
 
+## `cc whoami` — which account is this session on?
+
+```
+$ cc whoami
+
+  email    you@personal.example
+  name     You
+  plan     max · 20x
+  org      you@personal.example's Organization
+  profile  personal
+```
+
+It derives the Keychain item from the `CLAUDE_SECURESTORAGE_CONFIG_DIR` of the process that runs
+it and asks `GET https://api.anthropic.com/api/oauth/profile` who that token belongs to — nothing
+inferred from the `active` marker, so it cannot drift.
+
+Run it from the `!` prompt or the Bash tool: both inherit the variable, so the answer is the
+account the **running session** authenticates with, not the one a new session would pick up.
+`cc whoami <profile>` asks about another profile instead.
+
+When the answer disagrees with `/status`, `cc whoami` prints a note saying so — `/status` is the
+one that's wrong. The only case where `cc whoami` misleads is a `/login` mid-session: the process
+keeps its memoized token while the Keychain item already holds a new one.
+
 ## Where `cc` exists, and where it doesn't
 
 `cc` is a zsh function, sourced from **`~/.zshenv`** — which zsh reads for *every* shell, not
@@ -181,6 +206,7 @@ bash:
 
 ```bash
 cc-profiles                          # = cc list
+cc-profiles whoami                   # = cc whoami, the account behind the live token
 cc-profiles switch <profile>         # = cc switch, records the pending switch
 cat ~/.claude-profiles/active        # globally active profile
 cat .cc-profile                      # this project's profile, if any
@@ -212,8 +238,10 @@ re-authorized through the browser. A later `/login` overwrites only `claudeAiOau
 
 **Careful with the email shown by `/status` and the statusline**: it comes from `oauthAccount`
 in `~/.claude.json`, which is shared, so it reflects whichever profile logged in or refreshed a
-token last. It can be stale. Actual API calls do use the right account. Reliable sources:
-`cc list` and `/usage`, both of which read the API's counters.
+token last, and it does **not** follow a switch. Actual API calls do use the right account. Use
+`cc whoami` — it answers from the live token instead of that field. The field fixes itself on
+the next token refresh (~8h) or any `/login`; editing `~/.claude.json` by hand while a session
+is running just gets overwritten.
 
 MCP servers hosted by claude.ai are tied to the account that authorized them: under a different
 profile they may return 401 and ask for re-auth. Self-hosted or third-party MCP servers do not
